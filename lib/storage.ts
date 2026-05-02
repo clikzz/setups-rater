@@ -1,44 +1,47 @@
-import { promises as fs } from "fs"
-import path from "path"
+import { Redis } from "@upstash/redis"
 import { type AppState } from "./types"
 
-const DATA_DIR = path.resolve(process.cwd(), "data")
-const STATE_FILE = path.join(DATA_DIR, "state.json")
+let redis: Redis | null = null
 
-async function ensureDataDir(): Promise<void> {
-  try {
-    await fs.access(DATA_DIR)
-  } catch {
-    await fs.mkdir(DATA_DIR, { recursive: true })
+function getRedis(): Redis | null {
+  if (redis) return redis
+  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+    redis = new Redis({
+      url: process.env.KV_REST_API_URL,
+      token: process.env.KV_REST_API_TOKEN,
+    })
+    return redis
   }
+  return null
+}
+
+const STATE_KEY = "state"
+
+const DEFAULT_STATE: AppState = {
+  setups: {},
+  voting: { active: false, setupId: null, startTime: null },
+  config: { streamerWeight: 50 },
 }
 
 export async function getState(): Promise<AppState> {
-  await ensureDataDir()
+  const r = getRedis()
+  if (!r) return { ...DEFAULT_STATE }
   try {
-    const raw = await fs.readFile(STATE_FILE, "utf-8")
-    const parsed = JSON.parse(raw)
-    return {
-      setups: parsed.setups || {},
-      voting: parsed.voting || { active: false, setupId: null, startTime: null },
-      config: parsed.config || { streamerWeight: 50 },
-    }
+    const state = await r.get<AppState>(STATE_KEY)
+    return state ?? { ...DEFAULT_STATE }
   } catch {
-    return { setups: {}, voting: { active: false, setupId: null, startTime: null }, config: { streamerWeight: 50 } }
+    return { ...DEFAULT_STATE }
   }
 }
 
 export async function saveState(state: AppState): Promise<void> {
-  await ensureDataDir()
-  await fs.writeFile(STATE_FILE, JSON.stringify(state, null, 2), "utf-8")
+  const r = getRedis()
+  if (!r) return
+  await r.set(STATE_KEY, state)
 }
 
 export async function resetState(): Promise<AppState> {
-  const defaultState: AppState = {
-    setups: {},
-    voting: { active: false, setupId: null, startTime: null },
-    config: { streamerWeight: 50 },
-  }
-  await saveState(defaultState)
-  return defaultState
+  const r = getRedis()
+  if (r) await r.set(STATE_KEY, DEFAULT_STATE)
+  return { ...DEFAULT_STATE }
 }
